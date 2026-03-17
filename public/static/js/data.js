@@ -1,8 +1,15 @@
 // =============================================
 //  정율사관학원 강사 만족도 조사 — 데이터 v3.0
+//  강사 목록: DB(teacher_master)에서 동적 로드
+//  질문 구성: 이 파일에 유지
 // =============================================
 
+// surveyData는 DB에서 동적으로 구성됩니다.
+// main.js의 loadTeachersFromDB()가 이 변수를 채웁니다.
 let surveyData = {};
+
+// ── 평가 항목 ─────────────────────────────────
+// 기존 9개 + 추가 5개 = 총 14개 객관식 항목
 
 const evaluationQuestions = {
     "📣 강의 및 전달력": [
@@ -29,6 +36,7 @@ const evaluationQuestions = {
     ]
 };
 
+// ── 장진민 선생님 전용 (사회 / 인스터디 미진행) ──
 const jangJinMinQuestions = {
     "📣 강의 및 전달력": [
         { id: "q1",  text: "선생님의 수업은 전문적이다" },
@@ -52,6 +60,7 @@ const jangJinMinQuestions = {
     ]
 };
 
+// ── 고3 지성현 선생님 (탐구런투런) 전용 ──
 const runToRunQuestions = {
     "🔬 런투런 관리": [
         { id: "r1", text: "담당 선생님의 런투런 관리는 탐구 루틴에 도움이 되었다" },
@@ -60,6 +69,7 @@ const runToRunQuestions = {
     ]
 };
 
+// ── 주관식 질문 ──
 const openEndedQuestions = [
     {
         id: "open1",
@@ -86,6 +96,7 @@ const runToRunOpenQuestions = [
     }
 ];
 
+// ── 평점 옵션 ──
 const ratingOptions = [
     { value: 1, label: "매우\n그렇지\n않다" },
     { value: 2, label: "그렇지\n않다" },
@@ -94,10 +105,15 @@ const ratingOptions = [
     { value: 5, label: "매우\n그렇다" }
 ];
 
+// ── 헬퍼 함수 ──
+// questionType: 'normal' | 'jang' | 'runtrun'
+// teacher, subject 하드코딩 제거 → DB의 question_type 기반
 function getQuestionsForTeacher(teacher, subject, questionType) {
+    // questionType이 명시적으로 전달된 경우 우선 사용
     if (questionType === 'jang')    return jangJinMinQuestions;
     if (questionType === 'runtrun') return runToRunQuestions;
     if (questionType === 'normal')  return evaluationQuestions;
+    // 하위호환: 이름/과목 하드코딩 (기존 데이터 보호)
     if (teacher === "장진민" && subject === "사회") return jangJinMinQuestions;
     if (teacher === "지성현" && subject === "탐구런투런") return runToRunQuestions;
     return evaluationQuestions;

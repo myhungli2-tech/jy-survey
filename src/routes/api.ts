@@ -1,4 +1,10 @@
+/**
+ * 정율사관학원 강사 만족도 조사
+ * Hono 기반 REST API — 원본 functions/api/[[path]].js 완전 이식
+ * INTEGER AUTOINCREMENT ID 지원 (기존 DB 호환)
+ */
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 
 type Bindings = {
   DB: D1Database
@@ -6,243 +12,281 @@ type Bindings = {
 
 const api = new Hono<{ Bindings: Bindings }>()
 
-// ─── teacher_master ──────────────────────────────────────────────────────────
+api.use('*', cors())
 
-// GET /api/teacher_master?limit=500
-api.get('/teacher_master', async (c) => {
-  const limit = parseInt(c.req.query('limit') || '500')
-  const grade = c.req.query('grade')
-  const DB = c.env.DB
+const ALLOWED_TABLES = [
+  'survey_responses',
+  'survey_settings',
+  'teacher_master',
+  'teacher_roster'
+]
 
-  let query = 'SELECT * FROM teacher_master'
-  const params: (string | number)[] = []
-  if (grade !== undefined) {
-    query += ' WHERE grade = ?'
-    params.push(parseInt(grade))
+function errorResponse(c: any, message: string, status: number = 400) {
+  return c.json({ error: message }, status)
+}
+
+// ── GET 목록 ─────────────────────────────────────────────
+api.get('/:table', async (c) => {
+  const tableName = c.req.param('table')
+  if (!ALLOWED_TABLES.includes(tableName)) {
+    return errorResponse(c, `Table '${tableName}' not allowed`, 403)
   }
-  query += ' ORDER BY grade, subject, name LIMIT ?'
-  params.push(limit)
+  if (!c.env.DB) return errorResponse(c, 'DB not bound', 500)
 
-  const { results } = await DB.prepare(query).bind(...params).all()
-  return c.json(results)
+  const params = c.req.query()
+  const page   = Math.max(1, parseInt(params.page   || '1'))
+  const limit  = Math.min(500, parseInt(params.limit || '100'))
+  const search = params.search || ''
+  const sort   = params.sort   || 'created_at'
+  const offset = (page - 1) * limit
+
+  let colsResult: any
+  try {
+    colsResult = await c.env.DB.prepare(`PRAGMA table_info(${tableName})`).all()
+  } catch {
+    return errorResponse(c, `Table ${tableName} not found`, 404)
+  }
+  const cols = ((colsResult.results || []) as any[]).map((col: any) => col.name)
+
+  const hasDeleted = cols.includes('deleted')
+  let whereClause = hasDeleted ? 'WHERE (deleted IS NULL OR deleted != 1)' : 'WHERE 1=1'
+  const bindValues: any[] = []
+
+  if (search && cols.length > 0) {
+    const searchableCols = cols.filter((col: string) => col !== 'id' && col !== 'deleted')
+    const likeClauses = searchableCols.map((col: string) => `${col} LIKE ?`).join(' OR ')
+    if (likeClauses) {
+      whereClause += ` AND (${likeClauses})`
+      searchableCols.forEach(() => bindValues.push(`%${search}%`))
+    }
+  }
+
+  const safeSort = cols.includes(sort) ? sort : (cols.includes('created_at') ? 'created_at' : 'id')
+
+  const countSql = `SELECT COUNT(*) as cnt FROM ${tableName} ${whereClause}`
+  const countResult = await c.env.DB.prepare(countSql).bind(...bindValues).first() as any
+  const total = countResult ? countResult.cnt : 0
+
+  const dataSql = `SELECT * FROM ${tableName} ${whereClause} ORDER BY ${safeSort} DESC LIMIT ? OFFSET ?`
+  const dataResult = await c.env.DB.prepare(dataSql).bind(...bindValues, limit, offset).all()
+
+  return c.json({
+    data:  dataResult.results || [],
+    total,
+    page,
+    limit,
+    table: tableName
+  })
 })
 
-// GET /api/teacher_master/:id
-api.get('/teacher_master/:id', async (c) => {
-  const id = parseInt(c.req.param('id'))
-  const row = await c.env.DB.prepare('SELECT * FROM teacher_master WHERE id = ?').bind(id).first()
-  if (!row) return c.json({ error: 'Not found' }, 404)
+// ── GET 단건 ─────────────────────────────────────────────
+api.get('/:table/:id', async (c) => {
+  const tableName = c.req.param('table')
+  const id = c.req.param('id')
+  if (!ALLOWED_TABLES.includes(tableName)) {
+    return errorResponse(c, `Table '${tableName}' not allowed`, 403)
+  }
+  if (!c.env.DB) return errorResponse(c, 'DB not bound', 500)
+
+  const row = await c.env.DB.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).bind(id).first()
+  if (!row) return errorResponse(c, 'Record not found', 404)
   return c.json(row)
 })
 
-// POST /api/teacher_master
-api.post('/teacher_master', async (c) => {
-  const body = await c.req.json<{
-    name: string; subject: string; grade: number
-    question_type?: string; is_active?: number
-  }>()
-  const { name, subject, grade, question_type = 'normal', is_active = 1 } = body
-  if (!name || subject === undefined || grade === undefined) {
-    return c.json({ error: 'name, subject, grade are required' }, 400)
+// ── POST 생성 ────────────────────────────────────────────
+api.post('/:table', async (c) => {
+  const tableName = c.req.param('table')
+  if (!ALLOWED_TABLES.includes(tableName)) {
+    return errorResponse(c, `Table '${tableName}' not allowed`, 403)
   }
-  const result = await c.env.DB.prepare(
-    'INSERT INTO teacher_master (name, subject, grade, question_type, is_active) VALUES (?, ?, ?, ?, ?)'
-  ).bind(name, subject, grade, question_type, is_active).run()
-  return c.json({ id: result.meta.last_row_id, name, subject, grade, question_type, is_active }, 201)
-})
+  if (!c.env.DB) return errorResponse(c, 'DB not bound', 500)
 
-// PUT /api/teacher_master/:id
-api.put('/teacher_master/:id', async (c) => {
-  const id = parseInt(c.req.param('id'))
-  const body = await c.req.json<{
-    name?: string; subject?: string; grade?: number
-    question_type?: string; is_active?: number
-  }>()
-
-  const existing = await c.env.DB.prepare('SELECT * FROM teacher_master WHERE id = ?').bind(id).first() as any
-  if (!existing) return c.json({ error: 'Not found' }, 404)
-
-  const name = body.name ?? existing.name
-  const subject = body.subject ?? existing.subject
-  const grade = body.grade ?? existing.grade
-  const question_type = body.question_type ?? existing.question_type
-  const is_active = body.is_active ?? existing.is_active
-
-  await c.env.DB.prepare(
-    'UPDATE teacher_master SET name=?, subject=?, grade=?, question_type=?, is_active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?'
-  ).bind(name, subject, grade, question_type, is_active, id).run()
-
-  return c.json({ id, name, subject, grade, question_type, is_active })
-})
-
-// DELETE /api/teacher_master/:id
-api.delete('/teacher_master/:id', async (c) => {
-  const id = parseInt(c.req.param('id'))
-  await c.env.DB.prepare('DELETE FROM teacher_master WHERE id = ?').bind(id).run()
-  return c.json({ success: true })
-})
-
-// ─── survey_settings ─────────────────────────────────────────────────────────
-
-// GET /api/survey_settings
-api.get('/survey_settings', async (c) => {
-  const { results } = await c.env.DB.prepare(
-    'SELECT * FROM survey_settings ORDER BY year DESC, month DESC LIMIT 100'
-  ).all()
-  return c.json(results)
-})
-
-// POST /api/survey_settings
-api.post('/survey_settings', async (c) => {
-  const body = await c.req.json<{ year: number; month: number; label: string; is_active?: number }>()
-  const { year, month, label, is_active = 0 } = body
-  if (!year || !month || !label) {
-    return c.json({ error: 'year, month, label are required' }, 400)
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return errorResponse(c, 'Invalid JSON body')
   }
 
-  // 활성화하는 경우 기존 활성 설정 모두 비활성화
-  if (is_active === 1) {
-    await c.env.DB.prepare('UPDATE survey_settings SET is_active=0, updated_at=CURRENT_TIMESTAMP').run()
+  const now = Date.now()
+  // ID 없이 데이터 준비 (AUTOINCREMENT 사용)
+  const data: any = { ...body, created_at: now, updated_at: now, deleted: 0 }
+  // id 필드 제거 (AUTOINCREMENT로 자동 생성)
+  delete data.id
+
+  const colsResult = await c.env.DB.prepare(`PRAGMA table_info(${tableName})`).all()
+  const cols = ((colsResult.results || []) as any[]).map((col: any) => col.name)
+
+  const filtered: any = {}
+  for (const key of Object.keys(data)) {
+    if (cols.includes(key)) filtered[key] = data[key]
   }
+
+  // 없는 컬럼 ALTER TABLE로 추가
+  for (const key of Object.keys(data)) {
+    if (!cols.includes(key)) {
+      const colType = typeof data[key] === 'number' ? 'REAL' : 'TEXT'
+      try {
+        await c.env.DB.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${key} ${colType}`).run()
+        filtered[key] = data[key]
+        cols.push(key)
+      } catch (e) {
+        // already exists
+      }
+    }
+  }
+
+  const keys = Object.keys(filtered)
+  if (keys.length === 0) return errorResponse(c, 'No valid fields to insert')
+
+  const placeholders = keys.map(() => '?').join(', ')
+  const values = keys.map((k: string) => {
+    const v = filtered[k]
+    return typeof v === 'boolean' ? (v ? 1 : 0) : v
+  })
 
   const result = await c.env.DB.prepare(
-    'INSERT INTO survey_settings (year, month, label, is_active) VALUES (?, ?, ?, ?)'
-  ).bind(year, month, label, is_active).run()
+    `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders})`
+  ).bind(...values).run()
 
-  return c.json({ id: result.meta.last_row_id, year, month, label, is_active }, 201)
+  const newId = result.meta.last_row_id
+  const created = await c.env.DB.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).bind(newId).first()
+  return c.json(created || { ...filtered, id: newId }, 201)
 })
 
-// PUT /api/survey_settings/:id
-api.put('/survey_settings/:id', async (c) => {
-  const id = parseInt(c.req.param('id'))
-  const body = await c.req.json<{ year?: number; month?: number; label?: string; is_active?: number }>()
-
-  const existing = await c.env.DB.prepare('SELECT * FROM survey_settings WHERE id = ?').bind(id).first() as any
-  if (!existing) return c.json({ error: 'Not found' }, 404)
-
-  const year = body.year ?? existing.year
-  const month = body.month ?? existing.month
-  const label = body.label ?? existing.label
-  const is_active = body.is_active ?? existing.is_active
-
-  // 활성화하는 경우 기존 활성 설정 모두 비활성화
-  if (is_active === 1) {
-    await c.env.DB.prepare('UPDATE survey_settings SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id != ?').bind(id).run()
+// ── PUT 전체 수정 ─────────────────────────────────────────
+api.put('/:table/:id', async (c) => {
+  const tableName = c.req.param('table')
+  const id = c.req.param('id')
+  if (!ALLOWED_TABLES.includes(tableName)) {
+    return errorResponse(c, `Table '${tableName}' not allowed`, 403)
   }
+  if (!c.env.DB) return errorResponse(c, 'DB not bound', 500)
+
+  const existing = await c.env.DB.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).bind(id).first() as any
+  if (!existing) return errorResponse(c, 'Record not found', 404)
+
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return errorResponse(c, 'Invalid JSON body')
+  }
+
+  const now = Date.now()
+  const updates: any = { ...body, id, created_at: existing.created_at, updated_at: now, deleted: 0 }
+
+  const colsResult = await c.env.DB.prepare(`PRAGMA table_info(${tableName})`).all()
+  const cols: string[] = ((colsResult.results || []) as any[]).map((col: any) => col.name)
+
+  // 없는 컬럼 ALTER TABLE
+  for (const key of Object.keys(updates)) {
+    if (!cols.includes(key)) {
+      const colType = typeof updates[key] === 'number' ? 'REAL' : 'TEXT'
+      try {
+        await c.env.DB.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${key} ${colType}`).run()
+        cols.push(key)
+      } catch (e) {}
+    }
+  }
+
+  const setClauses: string[] = []
+  const values: any[] = []
+  for (const [key, val] of Object.entries(updates)) {
+    if (key === 'id') continue
+    if (!cols.includes(key)) continue
+    setClauses.push(`${key} = ?`)
+    values.push(typeof val === 'boolean' ? (val ? 1 : 0) : val)
+  }
+
+  if (setClauses.length === 0) return errorResponse(c, 'No fields to update')
 
   await c.env.DB.prepare(
-    'UPDATE survey_settings SET year=?, month=?, label=?, is_active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?'
-  ).bind(year, month, label, is_active, id).run()
+    `UPDATE ${tableName} SET ${setClauses.join(', ')} WHERE id = ?`
+  ).bind(...values, id).run()
 
-  return c.json({ id, year, month, label, is_active })
+  const updated = await c.env.DB.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).bind(id).first()
+  return c.json({ data: updated })
 })
 
-// DELETE /api/survey_settings/:id
-api.delete('/survey_settings/:id', async (c) => {
-  const id = parseInt(c.req.param('id'))
-  await c.env.DB.prepare('DELETE FROM survey_settings WHERE id = ?').bind(id).run()
-  return c.json({ success: true })
-})
+// ── PATCH 부분 수정 ───────────────────────────────────────
+api.patch('/:table/:id', async (c) => {
+  const tableName = c.req.param('table')
+  const id = c.req.param('id')
+  if (!ALLOWED_TABLES.includes(tableName)) {
+    return errorResponse(c, `Table '${tableName}' not allowed`, 403)
+  }
+  if (!c.env.DB) return errorResponse(c, 'DB not bound', 500)
 
-// ─── survey_responses ────────────────────────────────────────────────────────
+  const existing = await c.env.DB.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).bind(id).first() as any
+  if (!existing) return errorResponse(c, 'Record not found', 404)
 
-// GET /api/survey_responses?year=&month=&grade=&teacher=
-api.get('/survey_responses', async (c) => {
-  const year = c.req.query('year')
-  const month = c.req.query('month')
-  const grade = c.req.query('grade')
-  const teacher = c.req.query('teacher')
-  const limit = parseInt(c.req.query('limit') || '1000')
-
-  let query = 'SELECT * FROM survey_responses WHERE 1=1'
-  const params: (string | number)[] = []
-
-  if (year) { query += ' AND year=?'; params.push(parseInt(year)) }
-  if (month) { query += ' AND month=?'; params.push(parseInt(month)) }
-  if (grade) { query += ' AND grade=?'; params.push(parseInt(grade)) }
-  if (teacher) { query += ' AND teacher=?'; params.push(teacher) }
-
-  query += ' ORDER BY created_at DESC LIMIT ?'
-  params.push(limit)
-
-  const { results } = await c.env.DB.prepare(query).bind(...params).all()
-  return c.json(results)
-})
-
-// POST /api/survey_responses
-api.post('/survey_responses', async (c) => {
-  const body = await c.req.json<any>()
-  const {
-    year, month, grade, teacher, subject,
-    q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14,
-    r1, r2, r3,
-    average, comment1, comment2, timestamp
-  } = body
-
-  if (grade === undefined || !teacher || !subject) {
-    return c.json({ error: 'grade, teacher, subject are required' }, 400)
+  let body: any
+  try {
+    body = await c.req.json()
+  } catch {
+    return errorResponse(c, 'Invalid JSON body')
   }
 
-  const result = await c.env.DB.prepare(`
-    INSERT INTO survey_responses
-      (year, month, grade, teacher, subject,
-       q1,q2,q3,q4,q5,q6,q7,q8,q9,q10,q11,q12,q13,q14,
-       r1,r2,r3, average, comment1, comment2, timestamp)
-    VALUES (?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?, ?,?,?,?)
-  `).bind(
-    year ?? null, month ?? null, grade, teacher, subject,
-    q1 ?? null, q2 ?? null, q3 ?? null, q4 ?? null,
-    q5 ?? null, q6 ?? null, q7 ?? null, q8 ?? null,
-    q9 ?? null, q10 ?? null, q11 ?? null, q12 ?? null,
-    q13 ?? null, q14 ?? null,
-    r1 ?? null, r2 ?? null, r3 ?? null,
-    average ?? null,
-    comment1 ?? '', comment2 ?? '',
-    timestamp ?? new Date().toISOString()
-  ).run()
+  const now = Date.now()
+  const updates: any = { ...body, updated_at: now }
 
-  return c.json({ id: result.meta.last_row_id, success: true }, 201)
+  const colsResult = await c.env.DB.prepare(`PRAGMA table_info(${tableName})`).all()
+  const cols: string[] = ((colsResult.results || []) as any[]).map((col: any) => col.name)
+
+  for (const key of Object.keys(updates)) {
+    if (!cols.includes(key)) {
+      const colType = typeof updates[key] === 'number' ? 'REAL' : 'TEXT'
+      try {
+        await c.env.DB.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${key} ${colType}`).run()
+        cols.push(key)
+      } catch (e) {}
+    }
+  }
+
+  const setClauses: string[] = []
+  const values: any[] = []
+  for (const [key, val] of Object.entries(updates)) {
+    if (key === 'id') continue
+    if (!cols.includes(key)) continue
+    setClauses.push(`${key} = ?`)
+    values.push(typeof val === 'boolean' ? (val ? 1 : 0) : val)
+  }
+
+  if (setClauses.length === 0) return errorResponse(c, 'No fields to update')
+
+  await c.env.DB.prepare(
+    `UPDATE ${tableName} SET ${setClauses.join(', ')} WHERE id = ?`
+  ).bind(...values, id).run()
+
+  const updated = await c.env.DB.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).bind(id).first()
+  return c.json({ data: updated })
 })
 
-// GET /api/survey_responses/stats — 통계 API
-api.get('/survey_responses/stats', async (c) => {
-  const year = c.req.query('year')
-  const month = c.req.query('month')
+// ── DELETE 소프트 삭제 ────────────────────────────────────
+api.delete('/:table/:id', async (c) => {
+  const tableName = c.req.param('table')
+  const id = c.req.param('id')
+  if (!ALLOWED_TABLES.includes(tableName)) {
+    return errorResponse(c, `Table '${tableName}' not allowed`, 403)
+  }
+  if (!c.env.DB) return errorResponse(c, 'DB not bound', 500)
 
-  let whereClause = 'WHERE 1=1'
-  const params: (string | number)[] = []
-  if (year) { whereClause += ' AND year=?'; params.push(parseInt(year)) }
-  if (month) { whereClause += ' AND month=?'; params.push(parseInt(month)) }
+  const existing = await c.env.DB.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).bind(id).first()
+  if (!existing) return errorResponse(c, 'Record not found', 404)
 
-  const { results } = await c.env.DB.prepare(`
-    SELECT
-      teacher, subject, grade,
-      COUNT(*) as response_count,
-      ROUND(AVG(average), 2) as avg_score,
-      ROUND(AVG(q1), 2) as avg_q1,
-      ROUND(AVG(q2), 2) as avg_q2,
-      ROUND(AVG(q3), 2) as avg_q3,
-      ROUND(AVG(q4), 2) as avg_q4,
-      ROUND(AVG(q5), 2) as avg_q5,
-      ROUND(AVG(q6), 2) as avg_q6,
-      ROUND(AVG(q7), 2) as avg_q7,
-      ROUND(AVG(q8), 2) as avg_q8,
-      ROUND(AVG(q9), 2) as avg_q9,
-      ROUND(AVG(q10), 2) as avg_q10,
-      ROUND(AVG(q11), 2) as avg_q11,
-      ROUND(AVG(q12), 2) as avg_q12,
-      ROUND(AVG(q13), 2) as avg_q13,
-      ROUND(AVG(q14), 2) as avg_q14,
-      ROUND(AVG(r1), 2) as avg_r1,
-      ROUND(AVG(r2), 2) as avg_r2,
-      ROUND(AVG(r3), 2) as avg_r3
-    FROM survey_responses
-    ${whereClause}
-    GROUP BY teacher, subject, grade
-    ORDER BY grade, subject, teacher
-  `).bind(...params).all()
+  await c.env.DB.prepare(
+    `UPDATE ${tableName} SET deleted = 1, updated_at = ? WHERE id = ?`
+  ).bind(Date.now(), id).run()
 
-  return c.json(results)
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+    }
+  })
 })
 
 export default api
