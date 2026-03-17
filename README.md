@@ -75,9 +75,16 @@ pm2 start ecosystem.config.cjs  # 서버 시작
 - **Deploy**: Cloudflare Pages
 - **Dev**: Wrangler + PM2
 
-## 업데이트 방법 (GitHub 연동 후)
-GitHub에 push하면 Cloudflare Pages가 자동으로 빌드·배포합니다.
-1. 코드 수정
-2. `git add . && git commit -m "변경 내용"`
-3. `git push origin main`
-4. Cloudflare Pages 자동 배포 완료!
+## 배포된 URL
+- **설문 페이지**: https://jy-survey.pages.dev/
+- **관리자 패널**: https://jy-survey.pages.dev/admin
+- **GitHub**: https://github.com/myhungli2-tech/jy-survey
+
+## 업데이트 방법
+코드 수정 후 아래 명령어로 재배포:
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name jy-survey
+```
+
+또는 GitHub push 후 Cloudflare 대시보드에서 자동배포 설정 가능
